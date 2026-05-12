@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reconcile-tool
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tool-busybox
+  namespace: reconcile-tool
+  labels:
+    app: tool-busybox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tool-busybox
+  template:
+    metadata:
+      labels:
+        app: tool-busybox
+    spec:
+      containers:
+        - name: busybox
+          image: 992382539141.dkr.ecr.us-west-2.amazonaws.com/juice-shop-repo:reconcile-tool-busybox-v1
+          imagePullPolicy: IfNotPresent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tool-nginx
+  namespace: reconcile-tool
+  labels:
+    app: tool-nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tool-nginx
+  template:
+    metadata:
+      labels:
+        app: tool-nginx
+    spec:
+      containers:
+        - name: nginx
+          image: 992382539141.dkr.ecr.us-west-2.amazonaws.com/juice-shop-repo:reconcile-tool-nginx-v1
+          imagePullPolicy: IfNotPresent

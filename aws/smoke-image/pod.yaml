@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reconcile-smoke
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reconcile-smoke-pod
+  namespace: reconcile-smoke
+  labels:
+    app: reconcile-smoke
+spec:
+  containers:
+    - name: smoke
+      image: 992382539141.dkr.ecr.us-west-2.amazonaws.com/juice-shop-repo:reconcile-smoke-arm64-20260511175155
+      imagePullPolicy: IfNotPresent
+      # Keep Running so reconcile collects this workload image (cat alone exits → CrashLoop).
+      command: ["/bin/sh", "-c", "sleep infinity"]

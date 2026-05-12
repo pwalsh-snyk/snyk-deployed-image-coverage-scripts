@@ -1,0 +1,3 @@
+# Install everything (Azure + AWS entrypoints + shared library).
+-r azure/requirements.txt
+-r aws/requirements.txt
