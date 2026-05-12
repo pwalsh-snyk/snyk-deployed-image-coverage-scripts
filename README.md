@@ -14,7 +14,7 @@ On each run it:
 
 ## What this is
 
-Snyk scans container images well, but it does not know which images are **actually running** in your clusters versus sitting unused in a registry. This repo is a small **reconciliation layer**: it learns what is deployed from the Kubernetes API, keeps Snyk aligned with that reality (re-imports on a schedule, tags what it manages, and can remove projects for images that are no longer running), and does so **without** checking in a kubeconfig—each cloud entry script discovers clusters and obtains API access the idiomatic way for that provider.
+Snyk scans container images well, but it does not know which images are **actually running** in your clusters versus sitting unused in a registry. This repo is a small **reconciliation layer**: it's meant to run as a scheduled job to ensure your reported container issues are up-to-date in your Snyk account
 
 The **approach** is the same everywhere: **discover workloads → collect image refs from running pods → dedupe → Snyk import + tagging → optional cleanup of stale tagged projects.** Provider-specific pieces are only **how we authenticate and find clusters**; the Snyk and pod-image logic lives in **`shared/`** and is shared by both scripts.
 
