@@ -1,5 +1,17 @@
 # snyk-deployed-image-coverage
 
+## Why this exists
+
+When customers talk about container scanning with Snyk, the ask is almost always the same: *scan what's actually deployed, not everything in the registry.* Snyk has no native way to determine which scanned images are actively running on your clusters. This script closes that gap.
+
+On each run it:
+
+1. Discovers all AKS clusters in your Azure subscription(s) using the Azure SDK (no kubectl required).
+2. Collects every image reference from running pods — both the `spec` tag string and the resolved `sha256` digest from `status.containerStatuses[].image_id`.
+3. Triggers a Snyk v1 import for **each** distinct deployed image (after digest dedupe), every run — routing to the right registry integration by hostname — so images are re-scanned on a schedule, not only on first sight.
+4. Tags projects `image=deployed` (configurable) after successful imports so you can filter in the Snyk UI.
+5. Deletes Snyk projects tagged `image=deployed` whose image is no longer running, then removes the orphaned Snyk target if no projects remain.
+
 ## What this is
 
 Snyk scans container images well, but it does not know which images are **actually running** in your clusters versus sitting unused in a registry. This repo is a small **reconciliation layer**: it learns what is deployed from the Kubernetes API, keeps Snyk aligned with that reality (re-imports on a schedule, tags what it manages, and can remove projects for images that are no longer running), and does so **without** checking in a kubeconfig—each cloud entry script discovers clusters and obtains API access the idiomatic way for that provider.
