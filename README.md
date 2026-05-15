@@ -2,7 +2,7 @@
 
 ## Why this exists
 
-From a risk perspective, container security teams frequently ask how to prioritize issues for the images actually deployed in production, distinct from the broader set of images that may have moved through CI or sit in a registry. This repository offers one way to surface that view inside an existing Snyk org: a scheduled reconciliation pattern that discovers workloads in your cluster(s), imports the images they use through your existing registry integrations, tags them for easy filtering, and optionally retires projects when a workload is no longer deployed.
+From a risk perspective, container security teams frequently ask how to prioritize issues for the images actually deployed in production, & distinguish those from the broader set of images that sit in a registry. This repository offers one way to surface that view inside an existing Snyk account: a scheduled reconciliation pattern that discovers workloads in your cluster(s), imports the images that are deployed through your existing registry integrations, tags them for easy filtering, and retires projects when the image is no longer deployed.
 
 On each run it:
 
