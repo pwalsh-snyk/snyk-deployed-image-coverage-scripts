@@ -2,21 +2,23 @@
 
 ## Why this exists
 
-When customers talk about container scanning with Snyk, the ask is almost always the same: *scan what's actually deployed, not everything in the registry.* Snyk has no native way to determine which scanned images are actively running on your clusters. This script closes that gap.
+From a risk perspective, container security teams frequently ask how to prioritize issues for the images actually deployed in production, distinct from the broader set of images that may have moved through CI or sit in a registry. This repository offers one way to surface that view inside an existing Snyk org: a scheduled reconciliation pattern that discovers workloads in your cluster(s), imports the images they use through your existing registry integrations, tags them for easy filtering, and optionally retires projects when a workload is no longer deployed.
 
 On each run it:
 
-1. Discovers all AKS clusters in your Azure subscription(s) using the Azure SDK (no kubectl required).
-2. Collects every image reference from running pods — both the `spec` tag string and the resolved `sha256` digest from `status.containerStatuses[].image_id`.
-3. Triggers a Snyk v1 import for **each** distinct deployed image (after digest dedupe), every run — routing to the right registry integration by hostname — so images are re-scanned on a schedule, not only on first sight.
+1. Discovers clusters in your AWS account (EKS) or Azure subscription(s) (AKS) using the cloud provider SDK (no `kubectl` required).
+2. Collects every image reference from running pods (both the `spec.image` tag string and the resolved `sha256` digest from `status.containerStatuses[].image_id`), pairing them per container so each container contributes a single import target.
+3. Triggers a Snyk import for each deployed image, every run, routed to the right registry integration by hostname, so vulnerability results for what's running stay current rather than only on first sight.
 4. Tags projects `image=deployed` (configurable) after successful imports so you can filter in the Snyk UI.
 5. Deletes Snyk projects tagged `image=deployed` whose image is no longer running, then removes the orphaned Snyk target if no projects remain.
 
 ## What this is
 
-Snyk scans container images well, but it does not know which images are **actually running** in your clusters versus sitting unused in a registry. This repo is a small **reconciliation layer**: it's meant to run as a scheduled job to ensure your reported container issues are up-to-date in your Snyk account
+Reference scripts for Amazon EKS and Azure AKS. The scripts help customers import and identify currently deployed container images using just the Kubernetes API and Snyk's standard registry integrations. Run them on a schedule (for example in CI or a cron job) to keep imports for running images fresh and to maintain a consistent deploy tag (default `image=deployed`) for dashboards, policies, or cleanup.
 
-The **approach** is the same everywhere: **discover workloads → collect image refs from running pods → dedupe → Snyk import + tagging → optional cleanup of stale tagged projects.** Provider-specific pieces are only **how we authenticate and find clusters**; the Snyk and pod-image logic lives in **`shared/`** and is shared by both scripts.
+The approach is the same on both clouds: discover workloads, collect image refs from running pods, pair per container, run Snyk import and tagging, then optionally clean up stale tagged projects. Only cluster discovery and authentication differ per provider; import, tagging, and cleanup logic are shared.
+
+This is one approach among several a customer could adopt to bring deployed-image context into Snyk; teams that already rely on a sensor- or platform-based source of runtime context can continue to use that.
 
 ---
 
@@ -24,8 +26,8 @@ The **approach** is the same everywhere: **discover workloads → collect image 
 
 | Your environment | Go here |
 |--------------------|---------|
-| **Azure Kubernetes Service (AKS)** | **[`azure/README.md`](azure/README.md)** — install, env files, run `azure/reconcile.py`, flags, and **[technical details](azure/Technical-Details-AKS.md)** |
-| **Amazon Elastic Kubernetes Service (EKS)** | **[`aws/README.md`](aws/README.md)** — install, env files, run `aws/reconcile.py`, flags, and **[technical details](aws/Technical-Details-EKS.md)** |
+| **Azure Kubernetes Service (AKS)** | **[`azure/README.md`](azure/README.md)**: install, env files, how to run `azure/reconcile.py`, flags, and **[technical details](azure/Technical-Details-AKS.md)** |
+| **Amazon Elastic Kubernetes Service (EKS)** | **[`aws/README.md`](aws/README.md)**: install, env files, how to run `aws/reconcile.py`, flags, and **[technical details](aws/Technical-Details-EKS.md)** |
 
 Run commands **from the repository root** (for example `.venv/bin/python azure/reconcile.py` or `.venv/bin/python aws/reconcile.py`) so imports resolve.
 
@@ -43,4 +45,4 @@ Run commands **from the repository root** (for example `.venv/bin/python azure/r
 
 3. Copy the **`.env.example`** files (root + the folder for your cloud) into `.env` / `azure/.env` / `aws/.env` as described in the provider README, then follow that README for auth and first run.
 
-Details, CLI flags (`--dry-run`, `--images-file`, …), networking, and troubleshooting stay in the **Azure** and **AWS** READMEs above—this page stays at the overview so you can jump straight to the script that matches your environment.
+Details, CLI flags (`--dry-run`, `--images-file`, and so on), networking, and troubleshooting stay in the **Azure** and **AWS** READMEs above. This page stays at the overview so you can jump straight to the script that matches your environment.
