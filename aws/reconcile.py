@@ -158,8 +158,10 @@ def collect_all_images_eks(
     include_kube_system: bool = False,
     only_running_pods: bool = True,
     exclude_init_containers: bool = False,
-) -> set[str]:
+) -> tuple[set[str], set[str]]:
+    """Returns ``(all_refs, import_targets)`` aggregated across all clusters."""
     all_images: set[str] = set()
+    import_targets: set[str] = set()
 
     for region in regions:
         print(f"Discovering EKS clusters in region {region}...", flush=True)
@@ -196,18 +198,22 @@ def collect_all_images_eks(
                 )
             try:
                 core_v1 = make_k8s_core_v1_eks(region, name, boto_session)
-                images = collect_cluster_images(
+                images, targets = collect_cluster_images(
                     core_v1,
                     include_kube_system=include_kube_system,
                     only_running_pods=only_running_pods,
                     exclude_init_containers=exclude_init_containers,
                 )
-                print(f"    {len(images)} unique image references found.")
+                print(
+                    f"    {len(images)} unique image references found "
+                    f"({len(targets)} import target(s) after per-container pairing)."
+                )
                 all_images.update(images)
+                import_targets.update(targets)
             except Exception as e:
                 print(f"    Skipping {name}: {e}", file=sys.stderr)
 
-    return all_images
+    return all_images, import_targets
 
 
 def main() -> int:
@@ -269,6 +275,7 @@ def main() -> int:
     )
     cleanup_require_tag = _env_truthy("SNYK_CLEANUP_REQUIRE_TAG", default=True)
 
+    import_targets: set[str] | None = None
     if args.images_file:
         img_path = resolve_images_file_path(_ROOT, args.images_file)
         print(f"Loading images from {img_path}...", flush=True)
@@ -283,14 +290,18 @@ def main() -> int:
             )
             return 1
         boto_session = boto3.Session()
-        cluster_refs_raw = collect_all_images_eks(
+        cluster_refs_raw, import_targets = collect_all_images_eks(
             regions,
             boto_session,
             include_kube_system=include_kube_system,
             only_running_pods=only_running_pods,
             exclude_init_containers=exclude_init_containers,
         )
-        print(f"\nTotal: {len(cluster_refs_raw)} unique image references across all clusters.", flush=True)
+        print(
+            f"\nTotal: {len(cluster_refs_raw)} unique image references across all clusters "
+            f"({len(import_targets)} import target(s) after per-container pairing).",
+            flush=True,
+        )
 
     return run_reconcile_pipeline(
         cluster_refs_raw,
@@ -307,6 +318,7 @@ def main() -> int:
         wait_import=args.wait_import,
         dry_run=args.dry_run,
         verbose_import=args.verbose_import,
+        import_targets=import_targets,
     )
 
 

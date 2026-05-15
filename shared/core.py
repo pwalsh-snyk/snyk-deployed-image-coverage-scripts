@@ -111,16 +111,35 @@ def integration_id_for_image(ref: str, routing: IntegrationRouting) -> str:
         return routing.mcr or routing.default
     return routing.docker_hub or routing.default
 
+@dataclass
+class _ContainerImageRefs:
+    """spec.image and resolved status.image_id for one container in one pod."""
+
+    spec_image: str | None = None
+    image_id: str | None = None  # already stripped of ``docker-pullable://``
+
+
 def collect_cluster_images(
     core_v1: k8s_client.CoreV1Api,
     *,
     include_kube_system: bool = False,
     only_running_pods: bool = True,
     exclude_init_containers: bool = False,
-) -> set[str]:
+) -> tuple[set[str], set[str]]:
     """
-    Return unique image references from pods: spec image strings plus resolved
-    content digests from status (containerStatuses[].image_id).
+    Walk pods and return ``(all_refs, import_targets)``.
+
+    ``all_refs`` is every observed image string — both ``spec.image`` and
+    resolved ``status.containerStatuses[].image_id`` digests — used by cleanup
+    to match Snyk projects against what is actually running.
+
+    ``import_targets`` is one ref per container: ``spec.image`` (tag form) when
+    present, falling back to ``status.image_id`` when the spec ref is missing.
+    Pairing is preserved by keying on ``container.name``, which appears in both
+    ``pod.spec.containers`` and ``pod.status.containerStatuses``. This keeps
+    multiple containers in the same registry repository (e.g. one ECR repo with
+    ``juice-shop-app`` and ``nginx-alpine`` tags) from being double-imported as
+    both their tag and their digest.
 
     When ``only_running_pods`` is True (default), only pods with
     ``status.phase == "Running"`` are considered. Otherwise completed or failed
@@ -134,7 +153,8 @@ def collect_cluster_images(
     continually importing cluster addon images. Set ``include_kube_system=True``
     to include them.
     """
-    images: set[str] = set()
+    all_refs: set[str] = set()
+    import_targets: set[str] = set()
     try:
         pods = core_v1.list_pod_for_all_namespaces(watch=False)
     except ApiException as e:
@@ -150,6 +170,11 @@ def collect_cluster_images(
             phase = (pod.status.phase if pod.status else None) or ""
             if phase != "Running":
                 continue
+
+        # Per-container map keyed by container name: container_statuses report
+        # the same name, which lets us pair a spec.image tag with its digest.
+        per_container: dict[str, _ContainerImageRefs] = {}
+
         spec = pod.spec
         if spec:
             spec_containers: list = list(spec.containers or [])
@@ -157,8 +182,12 @@ def collect_cluster_images(
                 spec_containers += list(spec.init_containers or [])
             spec_containers += list(spec.ephemeral_containers or [])
             for container in spec_containers:
-                if container.image:
-                    images.add(container.image.strip())
+                if not container.name or not container.image:
+                    continue
+                img = container.image.strip()
+                per_container.setdefault(container.name, _ContainerImageRefs()).spec_image = img
+                all_refs.add(img)
+
         status = pod.status
         if status:
             statuses: list = list(status.container_statuses or [])
@@ -166,9 +195,23 @@ def collect_cluster_images(
                 statuses += list(status.init_container_statuses or [])
             statuses += list(status.ephemeral_container_statuses or [])
             for cs in statuses:
-                if cs.image_id:
-                    images.add(strip_docker_pullable_prefix(cs.image_id))
-    return images
+                if not cs.name or not cs.image_id:
+                    continue
+                cleaned = strip_docker_pullable_prefix(cs.image_id)
+                per_container.setdefault(cs.name, _ContainerImageRefs()).image_id = cleaned
+                all_refs.add(cleaned)
+
+        # Per-container pairing: emit exactly one import target per container.
+        # Prefer spec.image so the Snyk project is keyed on the human-readable
+        # tag (e.g. ``juice-shop-repo:nginx-alpine``); fall back to the digest
+        # when spec is missing (rare — can happen for ephemeralContainers).
+        for refs in per_container.values():
+            if refs.spec_image:
+                import_targets.add(refs.spec_image)
+            elif refs.image_id:
+                import_targets.add(refs.image_id)
+
+    return all_refs, import_targets
 # ---------------------------------------------------------------------------
 # Image ref helpers
 # ---------------------------------------------------------------------------
@@ -274,6 +317,11 @@ def repo_base_image_path(ref: str) -> str:
     """
     Repository path without registry host, image tag, or digest — used to relate
     a ``repo:tag`` spec string to a ``repo@sha256:…`` runtime id for the same image.
+
+    Docker Hub official images (``library/`` namespace) are canonicalized to the
+    short form so a bare ``nginx`` (typical pod ``spec.image``) matches the
+    canonical ``docker.io/library/nginx@sha256:…`` form Kubernetes records in
+    ``status.containerStatuses[].image_id`` after pull.
     """
     s = strip_docker_pullable_prefix(ref.strip())
     if not s:
@@ -281,7 +329,22 @@ def repo_base_image_path(ref: str) -> str:
     if re.fullmatch(r"(?i)sha256:[a-f0-9]{64}", s):
         return normalize_image_ref(s)
     s = strip_digest(s)
+
+    # Detect whether the source has an explicit registry host. Refs without a
+    # host (or whose host is the Docker Hub host) live in the Docker Hub
+    # namespace, where ``library/`` is implicit for official images.
+    parts = s.split("/", 1)
+    has_explicit_host = len(parts) > 1 and ("." in parts[0] or ":" in parts[0])
+    on_docker_hub = (not has_explicit_host) or parts[0].lower() in (
+        "docker.io",
+        "index.docker.io",
+    )
+
     s = strip_registry_hostname(s)
+
+    if on_docker_hub and s.lower().startswith("library/"):
+        s = s[len("library/") :]
+
     if "/" in s:
         repo, last = s.rsplit("/", 1)
         if ":" in last:
@@ -974,10 +1037,27 @@ def run_reconcile_pipeline(
     wait_import: bool,
     dry_run: bool,
     verbose_import: bool = False,
+    import_targets: set[str] | None = None,
 ) -> int:
-    """Dedupe images, import to Snyk, optional tagging, cleanup stale projects."""
-    cluster_images = dedupe_cluster_images_by_content(set(cluster_refs_raw))
-    n_before = len(cluster_refs_raw)
+    """
+    Dedupe images, import to Snyk, optional tagging, cleanup stale projects.
+
+    ``cluster_refs_raw`` is the complete observed image set (spec + status
+    digests) used for cleanup matching. ``import_targets`` is the per-container
+    set returned by ``collect_cluster_images`` — when supplied, we use it
+    directly so that two pods sharing one repo with different tags produce two
+    imports (not four). When omitted (e.g. ``--images-file`` mode where pairing
+    info is unavailable), we fall back to ``dedupe_cluster_images_by_content``
+    over the raw set, which uses repo-base heuristics.
+    """
+    if import_targets is not None:
+        # Container-level pairing already chose one ref per container; still
+        # run the content dedup as defense-in-depth (catches the rare case of
+        # two containers referencing the same image as tag vs. digest).
+        cluster_images = dedupe_cluster_images_by_content(set(import_targets))
+    else:
+        cluster_images = dedupe_cluster_images_by_content(set(cluster_refs_raw))
+    n_before = len(import_targets) if import_targets is not None else len(cluster_refs_raw)
     if len(cluster_images) < n_before:
         print(
             f"Deduplicated {n_before} strings to {len(cluster_images)} "
