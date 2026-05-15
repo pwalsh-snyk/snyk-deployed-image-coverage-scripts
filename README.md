@@ -1,3 +1,5 @@
+![Example code — Snyk open-source demonstration project; no long-term support. See README for contributions.](assets/example-code-banner.png)
+
 # snyk-deployed-image-coverage
 
 ## Why this exists
